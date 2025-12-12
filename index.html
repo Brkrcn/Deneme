@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Galaxy Canvas (iPhone Optimized)</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#000; touch-action:none; }
+    #hud{
+      position:fixed; left:12px; top:12px; z-index:10;
+      color:#fff; font: 12px/1.35 -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+      background: rgba(0,0,0,.45);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 10px;
+      padding: 10px 12px;
+      max-width: 360px;
+      -webkit-backdrop-filter: blur(6px);
+      backdrop-filter: blur(6px);
+      user-select:none;
+    }
+    #hud b { font-weight: 700; }
+    #hud .k { opacity:.85; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <b>iPhone Optimized 3D Galaxy</b><br/>
+    <span class="k">1 parmak: döndür • 2 parmak: zoom/pan • Gezegen: dokun → odak</span>
+  </div>
+
+  <!-- Three.js (CDN) -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+
+  <script>
+  (function(){
+    // --------- Performance knobs (tuned for iPhone Safari) ---------
+    const DPR_CAP = 1.5;          // iPhone için en kritik ayar: pixel ratio’yu kıs
+    const STAR_COUNT = 35000;     // 120k yerine 35k (hala dolu görünür)
+    const SKY_RADIUS = 7000;
+    const FAR = 12000;
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: "high-performance"
+    });
+    renderer.setSize(innerWidth, innerHeight, false);
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, DPR_CAP));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000006);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, FAR);
+    camera.position.set(0, 140, 340);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = true;
+    controls.minDistance = 20;
+    controls.maxDistance = 7000;
+    controls.target.set(0, 0, 0);
+
+    // Lights (cheap)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.18));
+    const sunLight = new THREE.PointLight(0xfff1cc, 2.2, 0, 2);
+    sunLight.position.set(0,0,0);
+    scene.add(sunLight);
+
+    // --------- Milky Way Sky (cheap shader) ---------
+    const skyGeo = new THREE.SphereGeometry(SKY_RADIUS, 32, 32); // lower segments
+    skyGeo.scale(-1,1,1);
+
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      uniforms: { },
+      vertexShader: `
+        varying vec3 vDir;
+        void main(){
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vDir;
+
+        float hash(vec2 p){
+          return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453);
+        }
+
+        void main(){
+          float band = exp(-abs(vDir.y) * 6.0);
+
+          float u = atan(vDir.z, vDir.x) * 0.15915494 + 0.5;
+          float v = asin(clamp(vDir.y, -1.0, 1.0)) * 0.318309886 + 0.5;
+
+          float n1 = hash(vec2(u*900.0, v*450.0));
+          float n2 = hash(vec2(u*1400.0, v*700.0));
+          float stars = step(0.9988, n1) + step(0.9992, n2);
+
+          vec3 base = vec3(0.01, 0.01, 0.03);
+          vec3 mw   = vec3(0.07, 0.09, 0.18) * band;
+          vec3 dust = vec3(0.18, 0.12, 0.08) * band * 0.25;
+          vec3 col = base + mw + dust + vec3(1.0) * stars;
+
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `
+    });
+    scene.add(new THREE.Mesh(skyGeo, skyMat));
+
+    // --------- Starfield Points (reduced) ---------
+    const starGeo = new THREE.BufferGeometry();
+    const starPos = new Float32Array(STAR_COUNT * 3);
+
+    for (let i=0; i<STAR_COUNT; i++){
+      const r = 5000 + Math.random()*1500;
+      const uu = Math.random();
+      const vv = Math.random();
+      const theta = 2*Math.PI*uu;
+      const phi = Math.acos(2*vv - 1);
+
+      starPos[i*3+0] = r * Math.sin(phi) * Math.cos(theta);
+      starPos[i*3+1] = r * Math.cos(phi);
+      starPos[i*3+2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+
+    const starMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 1.6,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false
+    });
+    scene.add(new THREE.Points(starGeo, starMat));
+
+    // --------- Solar System (scaled, low-poly) ---------
+    const solar = new THREE.Group();
+    scene.add(solar);
+
+    const sun = new THREE.Mesh(
+      new THREE.SphereGeometry(14, 24, 24),
+      new THREE.MeshStandardMaterial({
+        color: 0xffe2a8,
+        emissive: 0xffb55a,
+        emissiveIntensity: 1.8,
+        roughness: 1.0,
+        metalness: 0.0
+      })
+    );
+    sun.name = "Sun";
+    solar.add(sun);
+
+    function orbitLine(radius){
+      const segments = 96;
+      const pts = new Float32Array((segments+1) * 3);
+      for(let i=0;i<=segments;i++){
+        const a = (i/segments) * Math.PI*2;
+        pts[i*3+0] = Math.cos(a)*radius;
+        pts[i*3+1] = 0;
+        pts[i*3+2] = Math.sin(a)*radius;
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+      const m = new THREE.LineBasicMaterial({ color: 0x2a3a55, transparent:true, opacity:0.45 });
+      return new THREE.Line(g, m);
+    }
+
+    function makePlanet({name, radius, dist, color, orbitSpeed, spinSpeed}){
+      const pivot = new THREE.Group();
+      pivot.userData.orbitSpeed = orbitSpeed;
+      solar.add(pivot);
+
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(radius, 18, 18),
+        new THREE.MeshStandardMaterial({ color, roughness: 1.0, metalness: 0.0 })
+      );
+      mesh.position.x = dist;
+      mesh.name = name;
+      mesh.userData.spinSpeed = spinSpeed;
+      pivot.add(mesh);
+
+      solar.add(orbitLine(dist));
+      return { pivot, mesh };
+    }
+
+    const planets = [
+      makePlanet({ name:"Mercury", radius:2.4, dist:40,  color:0x8e8e8e, orbitSpeed:0.022, spinSpeed:0.018 }),
+      makePlanet({ name:"Venus",   radius:3.6, dist:55,  color:0xd9b38c, orbitSpeed:0.017, spinSpeed:0.010 }),
+      makePlanet({ name:"Earth",   radius:3.8, dist:75,  color:0x3a7bd5, orbitSpeed:0.014, spinSpeed:0.030 }),
+      makePlanet({ name:"Mars",    radius:3.0, dist:95,  color:0xc06040, orbitSpeed:0.012, spinSpeed:0.026 }),
+      makePlanet({ name:"Jupiter", radius:8.5, dist:135, color:0xd2b48c, orbitSpeed:0.007, spinSpeed:0.060 }),
+      makePlanet({ name:"Saturn",  radius:7.6, dist:180, color:0xe6d2a5, orbitSpeed:0.006, spinSpeed:0.055 }),
+      makePlanet({ name:"Uranus",  radius:6.0, dist:225, color:0x9ad0e5, orbitSpeed:0.005, spinSpeed:0.050 }),
+      makePlanet({ name:"Neptune", radius:5.8, dist:265, color:0x4b6cff, orbitSpeed:0.004, spinSpeed:0.048 })
+    ];
+
+    // Simple Saturn ring
+    {
+      const sat = planets.find(p => p.mesh.name === "Saturn").mesh;
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(9.2, 13.0, 36),
+        new THREE.MeshBasicMaterial({ color: 0xbfae7a, side: THREE.DoubleSide, transparent:true, opacity:0.55 })
+      );
+      ring.rotation.x = Math.PI/2;
+      sat.add(ring);
+    }
+
+    // --------- Tap to focus (touch-friendly) ---------
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+
+    function pick(clientX, clientY){
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(ndc, camera);
+      const targets = planets.map(p => p.mesh).concat([sun]);
+      const hits = raycaster.intersectObjects(targets, true);
+      if (hits.length){
+        const obj = hits[0].object;
+        controls.target.copy(obj.getWorldPosition(new THREE.Vector3()));
+      }
+    }
+
+    let downX=0, downY=0, downTime=0;
+    window.addEventListener("pointerdown", (e)=>{
+      downX = e.clientX; downY = e.clientY; downTime = performance.now();
+    }, { passive:true });
+
+    window.addEventListener("pointerup", (e)=>{
+      const dt = performance.now() - downTime;
+      const dx = Math.abs(e.clientX - downX);
+      const dy = Math.abs(e.clientY - downY);
+      if (dt < 250 && dx < 8 && dy < 8){
+        pick(e.clientX, e.clientY);
+      }
+    }, { passive:true });
+
+    // --------- Resize ---------
+    function onResize(){
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight, false);
+      renderer.setPixelRatio(Math.min(devicePixelRatio || 1, DPR_CAP));
+    }
+    addEventListener("resize", onResize);
+
+    // --------- Pause when hidden ---------
+    let running = true;
+    document.addEventListener("visibilitychange", ()=>{
+      running = !document.hidden;
+    });
+
+    // --------- Animation loop ---------
+    let last = performance.now();
+    function loop(now){
+      requestAnimationFrame(loop);
+      if (!running) return;
+
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      for (let i=0;i<planets.length;i++){
+        const p = planets[i];
+        p.pivot.rotation.y += p.pivot.userData.orbitSpeed;
+        p.mesh.rotation.y += p.mesh.userData.spinSpeed;
+      }
+
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    requestAnimationFrame(loop);
+  })();
+  </script>
+</body>
+</html>
